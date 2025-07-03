@@ -1,4 +1,4 @@
-pandas==2.3.0
+openpyxl==3.2.0b1
+pandas==2.2.3
 plotly==6.1.0
 streamlit==1.46.0
-~lotly==6.0.0rc0
