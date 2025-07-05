@@ -3,34 +3,48 @@ import pandas as pd
 import plotly.express as px
 import os
 import re
-import locale
+# Il modulo 'locale' non è più necessario
+# import locale 
 
-# --- CONFIGURAZIONE PAGINA STREAMLIT E LOCALIZZAZIONE---
+# --- CONFIGURAZIONE PAGINA STREAMLIT ---
 st.set_page_config(
     page_title="Dashboard Incassi Parcheggi",
     page_icon="🚗",
     layout="wide"
 )
 
-try:
-    locale.setlocale(locale.LC_ALL, 'it_IT.UTF-8')
-except locale.Error:
-    st.warning("Localizzazione italiana non trovata, potrebbero esserci problemi di formattazione. Verrà usata quella di default.")
+# La chiamata a locale.setlocale() viene rimossa.
 
+# Definizione dell'ordine standard dei servizi e mappatura nomi
 SERVIZI_ORDER = ["Autorizzazioni", "Abbonamenti", "Parcometri", "Hub Sosta (App)", "Tap&Park"]
 SERVIZI_FILENAME_MAP = {
-    "Autorizzazioni": "Autorizzazioni", "Abbonamenti": "Abbonamenti",
-    "Parcometro": "Parcometri", "ParkingHUB": "Hub Sosta (App)", "Tap&Park": "Tap&Park"
+    "Autorizzazioni": "Autorizzazioni",
+    "Abbonamenti": "Abbonamenti",
+    "Parcometro": "Parcometri",
+    "ParkingHUB": "Hub Sosta (App)",
+    "Tap&Park": "Tap&Park"
 }
 
+# --- NUOVA FUNZIONE HELPER PER LA FORMATTAZIONE (INDIPENDENTE DA LOCALE) ---
 def format_europeo(valore, tipo='valuta'):
-    if pd.isna(valore): return "N/A"
+    """
+    Formatta un numero secondo lo standard europeo (punto per migliaia, virgola per decimali)
+    senza dipendere dal modulo 'locale' del sistema operativo.
+    """
+    if pd.isna(valore):
+        return "N/A"
     try:
-        if tipo == 'valuta': return locale.currency(valore, symbol=True, grouping=True)
-        elif tipo == 'numero': return locale.format_string("%.0f", valore, grouping=True)
+        if tipo == 'valuta':
+            # Formatta con 2 decimali, usa '.' per migliaia, ',' per decimali e aggiunge '€'
+            return f"€ {valore:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        elif tipo == 'numero':
+            # Formatta come intero, usa '.' per migliaia
+            return f"{valore:,.0f}".replace(",", ".")
         return valore
-    except (ValueError, TypeError): return valore
+    except (ValueError, TypeError):
+        return valore
 
+# --- 1. FUNZIONE DI CARICAMENTO E PROCESSING DATI ---
 @st.cache_data
 def load_and_process_data_from_reports(data_folder):
     if not os.path.exists(data_folder):
@@ -42,7 +56,8 @@ def load_and_process_data_from_reports(data_folder):
         if not filename.startswith('Riepilogo_'): continue
         match = report_pattern.search(filename)
         if not match: continue
-        servizio_key, servizio_nome = match.group(1), SERVIZI_FILENAME_MAP.get(match.group(1), "Sconosciuto")
+        servizio_key = match.group(1)
+        servizio_nome = SERVIZI_FILENAME_MAP.get(servizio_key, "Sconosciuto")
         if servizio_nome == "Sconosciuto": continue
         try:
             df = pd.read_excel(os.path.join(data_folder, filename))
@@ -67,32 +82,63 @@ def load_and_process_data_from_reports(data_folder):
     dati_finali['Servizio'] = pd.Categorical(dati_finali['Servizio'], categories=SERVIZI_ORDER, ordered=True)
     return dati_finali
 
+# (Il resto del codice rimane identico...)
+# --- 2. FUNZIONE PER VISUALIZZARE L'ANALISI DI UN ANNO ---
 def display_analysis_for_year(df, year):
     df_anno = df[df['Anno'] == year].copy()
     if df_anno.empty:
         st.warning(f"Nessun dato disponibile per l'anno {year}.")
         return
-    data_inizio, data_fine = df_anno['DATA_ORA_INSERIMENTO'].min(), df_anno['DATA_ORA_INSERIMENTO'].max()
+
+    data_inizio = df_anno['DATA_ORA_INSERIMENTO'].min()
+    data_fine = df_anno['DATA_ORA_INSERIMENTO'].max()
     mesi_italiani = {m: pd.Timestamp(2000, m, 1).strftime('%B') for m in range(1, 13)}
     data_inizio_str = f"{data_inizio.day:02d} {mesi_italiani.get(data_inizio.month, '')}"
     data_fine_str = f"30 {mesi_italiani.get(data_fine.month, '')}" if year == 2024 and data_fine.month == 6 else f"{data_fine.day:02d} {mesi_italiani.get(data_fine.month, '')}"
+    
     st.header(f"Riepilogo Dati Anno {year} (dal {data_inizio_str} al {data_fine_str})")
-    incasso_totale, transazioni_totali = df_anno['Importo Totale'].sum(), df_anno['Numero Titoli'].sum()
+
+    incasso_totale = df_anno['Importo Totale'].sum()
+    transazioni_totali = df_anno['Numero Titoli'].sum()
+    
     col1, col2 = st.columns(2)
     col1.metric("Incasso Totale Annuo", format_europeo(incasso_totale))
     col2.metric("Numero Titoli Totali", format_europeo(transazioni_totali, 'numero'))
+    
     dati_per_servizio = df_anno.groupby('Servizio', observed=False)[['Importo Totale', 'Numero Titoli']].sum().reset_index()
     dati_per_servizio['Percentuale'] = (dati_per_servizio['Importo Totale'] / incasso_totale * 100) if incasso_totale > 0 else 0
     dati_per_servizio['Redditività Media'] = (dati_per_servizio['Importo Totale'] / dati_per_servizio['Numero Titoli'].replace(0, pd.NA)).fillna(0)
+
     st.subheader("Dettaglio per Tipologia di Servizio")
-    riga_totale = pd.DataFrame({'Servizio': ['TOTALE'], 'Importo Totale': [incasso_totale], 'Numero Titoli': [transazioni_totali], 'Percentuale': [100.0], 'Redditività Media': [incasso_totale / transazioni_totali if transazioni_totali > 0 else 0]})
+    riga_totale = pd.DataFrame({
+        'Servizio': ['TOTALE'], 
+        'Importo Totale': [incasso_totale], 
+        'Numero Titoli': [transazioni_totali],
+        'Percentuale': [100.0],
+        'Redditività Media': [incasso_totale / transazioni_totali if transazioni_totali > 0 else 0]
+    })
+    
     tabella_visualizzata = pd.concat([dati_per_servizio, riga_totale], ignore_index=True)
-    st.dataframe(tabella_visualizzata.style.format({'Importo Totale': lambda x: format_europeo(x), 'Numero Titoli': lambda x: format_europeo(x, 'numero'), 'Percentuale': '{:.2f}%', 'Redditività Media': lambda x: format_europeo(x)}).apply(lambda x: ['background-color: #D9E1F2; font-weight: bold'] * len(x) if x.name == len(tabella_visualizzata) - 1 else [''] * len(x), axis=1), use_container_width=True, hide_index=True)
+    st.dataframe(tabella_visualizzata.style.format({
+        'Importo Totale': lambda x: format_europeo(x), 
+        'Numero Titoli': lambda x: format_europeo(x, 'numero'),
+        'Percentuale': '{:.2f}%',
+        'Redditività Media': lambda x: format_europeo(x)
+    }).apply(lambda x: ['background-color: #D9E1F2; font-weight: bold'] * len(x) if x.name == len(tabella_visualizzata) - 1 else [''] * len(x), axis=1), 
+    use_container_width=True, hide_index=True)
+    
     col1_graf, col2_graf = st.columns(2)
     with col1_graf:
-        st.subheader("Composizione Incassi"); fig_pie = px.pie(dati_per_servizio, names='Servizio', values='Importo Totale', title=f'Distribuzione Incassi {year}', hole=0.3); fig_pie.update_traces(textposition='inside', textinfo='percent+label', sort=False); st.plotly_chart(fig_pie, use_container_width=True)
+        st.subheader("Composizione Incassi")
+        fig_pie = px.pie(dati_per_servizio, names='Servizio', values='Importo Totale', title=f'Distribuzione Incassi {year}', hole=0.3)
+        fig_pie.update_traces(textposition='inside', textinfo='percent+label', sort=False)
+        st.plotly_chart(fig_pie, use_container_width=True)
     with col2_graf:
-        st.subheader("Confronto Servizi (per Incasso)"); fig_bar = px.bar(dati_per_servizio, x='Servizio', y='Importo Totale', title=f'Incassi per Servizio {year}', text_auto=False); fig_bar.update_traces(texttemplate=[format_europeo(val) for val in dati_per_servizio['Importo Totale']], textposition="outside"); st.plotly_chart(fig_bar, use_container_width=True)
+        st.subheader("Confronto Servizi (per Incasso)")
+        fig_bar = px.bar(dati_per_servizio, x='Servizio', y='Importo Totale', title=f'Incassi per Servizio {year}', text_auto=False)
+        fig_bar.update_traces(texttemplate=[format_europeo(val) for val in dati_per_servizio['Importo Totale']], textposition="outside")
+        st.plotly_chart(fig_bar, use_container_width=True)
+    
     st.subheader("Andamento Temporale Mensile per Servizio")
     andamento_mensile = df_anno.pivot_table(values='Importo Totale', index='Mese', columns='Servizio', aggfunc='sum', observed=False).fillna(0)
     df_plot = andamento_mensile.reset_index().melt(id_vars='Mese', var_name='Servizio', value_name='Importo')
@@ -102,7 +148,10 @@ def display_analysis_for_year(df, year):
     st.plotly_chart(fig_line_dettaglio, use_container_width=True)
     st.info("💡 Clicca sugli elementi nella legenda del grafico per nascondere o mostrare le linee.")
 
-st.title("🚗 Dashboard Analisi Incassi Parcheggi"); st.markdown("Applicazione per il confronto degli incassi su base annuale e mensile.")
+# --- 3. CORPO PRINCIPALE DELL'APPLICAZIONE ---
+st.title("🚗 Dashboard Analisi Incassi Parcheggi")
+st.markdown("Applicazione per il confronto degli incassi su base annuale e mensile.")
+
 ANNO_1, ANNO_2, IMPORTO_RETTIFICA = 2024, 2025, -1350.84
 full_data = load_and_process_data_from_reports("data_sources")
 if full_data is None: st.stop()
@@ -118,7 +167,6 @@ if totale_incasso_feb_2024 > 0:
     RETTIFICA_PROPORZIONALE_DF['Servizio'] = pd.Categorical(RETTIFICA_PROPORZIONALE_DF['Servizio'], categories=SERVIZI_ORDER, ordered=True)
 
 st.sidebar.title("Note e Cronistoria")
-# (Codice sidebar omesso per brevità)
 st.sidebar.markdown("---")
 st.sidebar.subheader("Anno 2023")
 st.sidebar.markdown("- **Fine Ottobre 2023**: Assunzione di Tombolini e Marinelli.\n- **18/10/2023**: Attivazione parcometri annuali.\n- **15/12/2023**: Attivazione ARU per abbonamenti.\n- **20/12/2023**: Licenziamento Marinelli.")
@@ -129,6 +177,7 @@ st.sidebar.markdown("- **01/01/2024**: Assunzione Lancelotti.\n- **01/04/2024**:
 st.sidebar.markdown("---")
 st.sidebar.subheader("Anno 2025")
 st.sidebar.markdown("- **07/04/2025**: Licenziamento Lancelotti.\n- **09/05/2025**: Assunzione Viti.")
+
 
 tab_confronto, tab_anno1, tab_anno2 = st.tabs([f"📊 Confronto {ANNO_1} vs {ANNO_2}", f"🗓️ Dettaglio {ANNO_1}", f"🗓️ Dettaglio {ANNO_2}"])
 
@@ -171,10 +220,10 @@ with tab_confronto:
     tot_imp_2, tot_tit_2 = pivot_importi.get(ANNO_2, pd.Series(0)).sum(), pivot_titoli.get(ANNO_2, pd.Series(0)).sum()
     redd_tot_1 = tot_imp_1 / tot_tit_1 if tot_tit_1 > 0 else 0
     redd_tot_2 = tot_imp_2 / tot_tit_2 if tot_tit_2 > 0 else 0
-    riga_tot_redd = pd.DataFrame({'Variazione Assoluta': [redd_tot_2 - redd_tot_1], 'Variazione %': [(redd_tot_2 - redd_tot_1) / redd_tot_1 * 100 if redd_tot_1 > 0 else 0]}, index=['TOTALE'])
-    riga_tot_redd[ANNO_1] = redd_tot_1
-    riga_tot_redd[ANNO_2] = redd_tot_2
-    redditivita_con_totale = pd.concat([redditivita, riga_tot_redd])
+    riga_totale_redd = pd.DataFrame({'Variazione Assoluta': [redd_tot_2 - redd_tot_1], 'Variazione %': [(redd_tot_2 - redd_tot_1) / redd_tot_1 * 100 if redd_tot_1 > 0 else 0]}, index=['TOTALE'])
+    riga_totale_redd[ANNO_1] = redd_tot_1
+    riga_totale_redd[ANNO_2] = redd_tot_2
+    redditivita_con_totale = pd.concat([redditivita, riga_totale_redd])
     redditivita_con_totale.columns = [str(c) for c in redditivita_con_totale.columns]
     st.dataframe(redditivita_con_totale.style.format({str(ANNO_1): lambda x: format_europeo(x), str(ANNO_2): lambda x: format_europeo(x), 'Variazione Assoluta': lambda x: f"{'+' if x >= 0 else ''}{format_europeo(x)}", 'Variazione %': '{:+.2f}%'}).map(colora_confronto_variazione, subset=['Variazione %']).apply(lambda row: ['font-weight: bold; background-color: #D9E1F2'] * len(row) if row.name == 'TOTALE' else [''] * len(row), axis=1), use_container_width=True)
 
@@ -201,12 +250,14 @@ with tab_confronto:
     totali = pivot_confronto.sum()
     totali['Variazione %'] = (totali['Variazione Assoluta'] / totali[ANNO_1]) * 100 if totali[ANNO_1] != 0 else 0
     totali.name = 'TOTALE'
+    
     pivot_confronto_con_totale = pd.concat([pivot_confronto, totali.to_frame().T])
     pivot_confronto_con_totale.columns = [str(c) for c in pivot_confronto_con_totale.columns]
     
     st.dataframe(pivot_confronto_con_totale.style.format({str(ANNO_1): lambda x: format_europeo(x, 'valuta' if is_curr else 'numero'), str(ANNO_2): lambda x: format_europeo(x, 'valuta' if is_curr else 'numero'), 'Variazione Assoluta': lambda x: f"{'+' if x >= 0 else ''}{format_europeo(x, 'valuta' if is_curr else 'numero')}", 'Variazione %': '{:+.2f}%'}).map(colora_confronto_variazione, subset=['Variazione %']).apply(lambda row: ['font-weight: bold; background-color: #D9E1F2'] * len(row) if row.name == 'TOTALE' else [''] * len(row), axis=1), use_container_width=True)
 
     df_plot_line = pivot_confronto[[ANNO_1, ANNO_2]].copy()
+    df_plot_line.columns = [str(c) for c in df_plot_line.columns]
     fig_line = px.line(df_plot_line, title=f"Confronto Mensile {metric_selezionata} per: {servizio_selezionato}", markers=True, labels={"value": y_label, "index": "Mese", "variable": "Anno"})
     fig_line.update_layout(yaxis_title=y_label, xaxis_title="Mese")
     st.plotly_chart(fig_line, use_container_width=True)
