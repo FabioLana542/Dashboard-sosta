@@ -3,8 +3,6 @@ import pandas as pd
 import plotly.express as px
 import os
 import re
-# Il modulo 'locale' non è più necessario
-# import locale 
 
 # --- CONFIGURAZIONE PAGINA STREAMLIT ---
 st.set_page_config(
@@ -13,19 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# La chiamata a locale.setlocale() viene rimossa.
-
-# Definizione dell'ordine standard dei servizi e mappatura nomi
-SERVIZI_ORDER = ["Autorizzazioni", "Abbonamenti", "Parcometri", "Hub Sosta (App)", "Tap&Park"]
-SERVIZI_FILENAME_MAP = {
-    "Autorizzazioni": "Autorizzazioni",
-    "Abbonamenti": "Abbonamenti",
-    "Parcometro": "Parcometri",
-    "ParkingHUB": "Hub Sosta (App)",
-    "Tap&Park": "Tap&Park"
-}
-
-# --- NUOVA FUNZIONE HELPER PER LA FORMATTAZIONE (INDIPENDENTE DA LOCALE) ---
+# --- FUNZIONE HELPER PER LA FORMATTAZIONE ---
 def format_europeo(valore, tipo='valuta'):
     """
     Formatta un numero secondo lo standard europeo (punto per migliaia, virgola per decimali)
@@ -43,46 +29,70 @@ def format_europeo(valore, tipo='valuta'):
         return valore
     except (ValueError, TypeError):
         return valore
+        
+# --- DEFINIZIONI GLOBALI ---
+# <-- MODIFICA 1: Aggiornamento del nome del servizio nell'ordine e nella mappa -->
+SERVIZI_ORDER = ["Autorizzazioni", "Abbonamenti", "Parcometri", "Hub Sosta (App)", "Tap&Park (ricariche)"]
+SERVIZI_FILENAME_MAP = {
+    "Autorizzazioni": "Autorizzazioni",
+    "Abbonamenti": "Abbonamenti",
+    "Parcometro": "Parcometri",
+    "ParkingHUB": "Hub Sosta (App)",
+    "Tap&Park": "Tap&Park (ricariche)"
+}
 
 # --- 1. FUNZIONE DI CARICAMENTO E PROCESSING DATI ---
 @st.cache_data
 def load_and_process_data_from_reports(data_folder):
     if not os.path.exists(data_folder):
-        st.error(f"Cartella dei dati non trovata: '{data_folder}'.")
+        st.error(f"Cartella dei dati non trovata: '{data_folder}'. Assicurarsi che esista e contenga i file Riepilogo_*.xlsx")
         return None
+
     all_data = []
     report_pattern = re.compile(r'Riepilogo_(.+)_(?:Mensile)\.xlsx$', re.IGNORECASE)
+
     for filename in os.listdir(data_folder):
-        if not filename.startswith('Riepilogo_'): continue
+        if not filename.startswith('Riepilogo_'):
+            continue
+        
         match = report_pattern.search(filename)
-        if not match: continue
+        if not match:
+            continue
+            
         servizio_key = match.group(1)
         servizio_nome = SERVIZI_FILENAME_MAP.get(servizio_key, "Sconosciuto")
-        if servizio_nome == "Sconosciuto": continue
+        if servizio_nome == "Sconosciuto":
+            continue
+
+        file_path = os.path.join(data_folder, filename)
         try:
-            df = pd.read_excel(os.path.join(data_folder, filename))
+            df = pd.read_excel(file_path)
             df['Servizio'] = servizio_nome
             all_data.append(df)
         except Exception as e:
-            st.warning(f"Impossibile leggere il file '{filename}': {e}")
+            st.warning(f"Impossibile leggere o processare il file '{filename}': {e}")
+            
     if not all_data:
-        st.error("Nessun file di riepilogo valido trovato.")
+        st.error("Nessun file di riepilogo valido trovato nella cartella 'data_sources'.")
         return None
+
     dati_completi = pd.concat(all_data, ignore_index=True)
     dati_completi['DATA_ORA_INSERIMENTO'] = pd.to_datetime(dati_completi['Mese'] + '-01')
     dati_completi['Anno'] = dati_completi['DATA_ORA_INSERIMENTO'].dt.year
     dati_completi['Mese'] = dati_completi['DATA_ORA_INSERIMENTO'].dt.month
     dati_completi = dati_completi.rename(columns={'Numero Transazioni': 'Numero Titoli', 'Importo Totale': 'Importo Totale'})
+
     rettifiche = [
         {'Anno': 2024, 'Mese': 1, 'Servizio': 'Hub Sosta (App)', 'Importo Totale': 3130.5, 'Numero Titoli': 1, 'DATA_ORA_INSERIMENTO': pd.to_datetime('2024-01-31')},
         {'Anno': 2024, 'Mese': 2, 'Servizio': 'Hub Sosta (App)', 'Importo Totale': 3130.5, 'Numero Titoli': 1, 'DATA_ORA_INSERIMENTO': pd.to_datetime('2024-02-29')},
         {'Anno': 2024, 'Mese': 3, 'Servizio': 'Hub Sosta (App)', 'Importo Totale': 3130.5, 'Numero Titoli': 1, 'DATA_ORA_INSERIMENTO': pd.to_datetime('2024-03-31')}
     ]
-    dati_finali = pd.concat([dati_completi, pd.DataFrame(rettifiche)], ignore_index=True)
+    df_rettifiche = pd.DataFrame(rettifiche)
+    
+    dati_finali = pd.concat([dati_completi, df_rettifiche], ignore_index=True)
     dati_finali['Servizio'] = pd.Categorical(dati_finali['Servizio'], categories=SERVIZI_ORDER, ordered=True)
     return dati_finali
 
-# (Il resto del codice rimane identico...)
 # --- 2. FUNZIONE PER VISUALIZZARE L'ANALISI DI UN ANNO ---
 def display_analysis_for_year(df, year):
     df_anno = df[df['Anno'] == year].copy()
@@ -237,7 +247,8 @@ with tab_confronto:
     value_col, y_label, is_curr = ('Importo Totale', 'Incasso Totale (€)', True) if metric_selezionata == 'Incasso Totale' else ('Numero Titoli', 'Numero Titoli', False)
     
     if servizio_selezionato == 'Tutti i Servizi': dati_filtrati = dati_calcolo.copy()
-    elif servizio_selezionato == 'Sosta Occasionale (Aggregato)': dati_filtrati = dati_calcolo[dati_calcolo['Servizio'].isin(['Parcometri', 'Hub Sosta (App)', 'Tap&Park'])].copy()
+    # <-- MODIFICA 2: Aggiornamento del nome del servizio nella lista -->
+    elif servizio_selezionato == 'Sosta Occasionale (Aggregato)': dati_filtrati = dati_calcolo[dati_calcolo['Servizio'].isin(['Parcometri', 'Hub Sosta (App)', 'Tap&Park (ricariche)'])].copy()
     else: dati_filtrati = dati_calcolo[dati_calcolo['Servizio'] == servizio_selezionato].copy()
         
     pivot_confronto = dati_filtrati.pivot_table(values=value_col, index='Mese', columns='Anno', aggfunc='sum', observed=False).fillna(0).reindex(columns=[ANNO_1, ANNO_2], fill_value=0)
