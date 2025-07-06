@@ -3,7 +3,8 @@ import pandas as pd
 import plotly.express as px
 import os
 import re
-from streamlit_gspread import GSpreadConnection
+# --- MODIFICA CORRETTA: Importa la libreria giusta ---
+from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURAZIONE PAGINA STREAMLIT ---
 st.set_page_config(
@@ -22,47 +23,34 @@ def format_europeo(valore, tipo='valuta'):
     except (ValueError, TypeError): return valore
 
 # --- GESTIONE NOTE CON GOOGLE SHEETS ---
+# La creazione della connessione usa la classe corretta
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Stabilisce la connessione a Google Sheets usando i Secrets di Streamlit
-# st.connection si occupa di tutto in modo sicuro e automatico.
-conn = st.connection("gspread", type=GSpreadConnection)
-
-# URL del tuo Google Sheet (da inserire nei secrets se vuoi tenerlo privato,
-# altrimenti puoi metterlo direttamente qui se il foglio è accessibile)
-# Per semplicità lo mettiamo qui, ma per massima sicurezza andrebbe in st.secrets
-# Esempio: GOOGLE_SHEET_URL = st.secrets["connections"]["gspread"]["spreadsheet"]
 NOME_FOGLIO_NOTE = "DashboardAppNotes" 
-
-@st.cache_data(ttl=3600) # Cache per 1 ora per non sovraccaricare le API
-def get_worksheet():
-    """Ottiene il worksheet. Messo in cache per performance."""
-    return conn.connect(spreadsheet=NOME_FOGLIO_NOTE).worksheet("notes")
 
 def load_notes_from_gsheet():
     """Carica le note da Google Sheets e le restituisce come dizionario."""
     try:
-        ws = get_worksheet()
-        df_notes = conn.read(worksheet=ws, usecols=[0, 1, 2], header=0)
-        df_notes = df_notes.dropna(how="all") # Rimuove righe completamente vuote
+        df_notes = conn.read(worksheet="notes", usecols=[0, 1, 2], ttl="10m")
+        df_notes = df_notes.dropna(how="all").astype(str)
         
         notes_dict = {}
         for _, row in df_notes.iterrows():
             table_key = row["table_key"]
             row_index = row["row_index"]
-            note_text = row.get("note_text", "") # Usa .get per sicurezza
+            note_text = row.get("note_text", "")
             
-            if pd.isna(table_key) or pd.isna(row_index): continue
-
             if table_key not in notes_dict:
                 notes_dict[table_key] = {}
             
-            notes_dict[table_key][str(row_index)] = str(note_text) if not pd.isna(note_text) else ""
+            notes_dict[table_key][row_index] = note_text
             
         st.sidebar.info("Note caricate da Google Sheets.")
         return notes_dict
     except Exception as e:
-        st.error(f"Impossibile caricare le note da Google Sheets: {e}")
+        st.error(f"Foglio 'notes' non trovato o illeggibile: {e}. Verrà creato al primo salvataggio.")
         return {}
+
 
 def save_notes_to_gsheet(notes_dict):
     """Salva il dizionario di note su Google Sheets, sovrascrivendo i dati esistenti."""
@@ -78,11 +66,9 @@ def save_notes_to_gsheet(notes_dict):
 
     try:
         df_to_save = pd.DataFrame(all_notes, columns=["table_key", "row_index", "note_text"])
-        ws = get_worksheet()
-        ws.clear() # Pulisce il foglio
-        conn.update(worksheet=ws, data=df_to_save) # Scrive i nuovi dati
+        conn.update(worksheet="notes", data=df_to_save)
         st.sidebar.success("Note salvate con successo su Google Sheets!")
-        st.cache_data.clear() # Pulisce la cache per ricaricare i dati aggiornati
+        st.cache_data.clear()
     except Exception as e:
         st.sidebar.error(f"Errore durante il salvataggio su Google Sheets: {e}")
 
@@ -134,9 +120,9 @@ def load_and_process_data_from_reports(data_folder):
     dati_finali['Servizio'] = pd.Categorical(dati_finali['Servizio'], categories=SERVIZI_ORDER, ordered=True)
     return dati_finali
 
+
 # --- 2. FUNZIONE PER VISUALIZZARE L'ANALISI DI UN ANNO ---
 def display_analysis_for_year(df, year):
-    # ... (questa funzione rimane identica)
     df_anno = df[df['Anno'] == year].copy()
     if df_anno.empty:
         st.warning(f"Nessun dato disponibile per l'anno {year}.")
@@ -183,7 +169,6 @@ if st.sidebar.button("💾 Salva Tutte le Note", use_container_width=True):
     save_notes_to_gsheet(st.session_state.notes)
 st.sidebar.markdown("---")
 st.sidebar.title("Cronistoria")
-# ... (la cronistoria rimane identica)
 st.sidebar.subheader("Anno 2023"); st.sidebar.markdown("- **Fine Ottobre 2023**: Assunzione di Tombolini e Marinelli.\n- **18/10/2023**: Attivazione parcometri annuali.\n- **15/12/2023**: Attivazione ARU per abbonamenti.\n- **20/12/2023**: Licenziamento Marinelli.")
 st.sidebar.markdown("---"); st.sidebar.subheader("Anno 2024"); st.sidebar.markdown(f"- **Rettifica Bisestile**: L'opzione sottrae un totale di **{format_europeo(abs(IMPORTO_RETTIFICA))}** dagli incassi di Febbraio 2024."); st.sidebar.markdown("- **01/01/2024**: Assunzione Lancelotti.\n- **01/04/2024**: Attivazione ParkingHUB (MooneyGo).\n- **01/04/2024**: Inizio sanzionamento.\n- **01/04/2024**: **Rettifica Manuale**: Aggiunti € 3.130,50/mese per Gen-Mar a 'Hub Sosta (App)'.\n- **03/04/2024**: Attivazione parcometri estivi.\n- **27/04/2024**: Attivazione POS su parcometri.\n- **21/05/2024**: Attivazione EasyPark.\n- **01/06/2024**: Stop autorizzazioni da PL.")
 st.sidebar.markdown("---"); st.sidebar.subheader("Anno 2025"); st.sidebar.markdown("- **07/04/2025**: Licenziamento Lancelotti.\n- **09/05/2025**: Assunzione Viti.")
@@ -192,15 +177,11 @@ st.sidebar.markdown("---"); st.sidebar.subheader("Anno 2025"); st.sidebar.markdo
 tab_confronto, tab_anno1, tab_anno2 = st.tabs([f"📊 Confronto {ANNO_1} vs {ANNO_2}", f"🗓️ Dettaglio {ANNO_1}", f"🗓️ Dettaglio {ANNO_2}"])
 
 with tab_confronto:
-    # Il resto del codice della tab confronto rimane IDENTICO
-    # Utilizza le stesse funzioni che ora leggono e scrivono da/su session_state
-    # La logica di visualizzazione non deve cambiare.
     st.header(f"Andamento Temporale e Confronto {ANNO_1} vs {ANNO_2} (dal 01 gennaio al 30 giugno)")
     def colora_confronto_variazione(val):
         if pd.isna(val) or val == 0: return 'color: grey'
         return 'color: green' if val > 0 else 'color: red'
 
-    # --- FUNZIONE GENERALE PER TABELLE CON NOTE ---
     def create_comparison_table_with_notes(df_data, value_col, title, table_key, is_currency=True):
         st.markdown(f"**{title}**")
         
@@ -230,7 +211,6 @@ with tab_confronto:
             for idx in pivot_con_totale.index:
                 st.session_state.notes[table_key][str(idx)] = st.text_area(f"Nota per **{idx}**:", value=st.session_state.notes[table_key].get(str(idx), ""), key=f"{table_key}_{idx}")
 
-    # --- Sezione Tabelle Incassi e Titoli ---
     st.subheader("Confronto Aggregato per Servizio")
     adjust_servizi = st.checkbox(f"✅ Applica rettifica anno bisestile ({format_europeo(IMPORTO_RETTIFICA)})", key="leap_servizi")
     dati_servizi = full_data.copy()
@@ -240,7 +220,6 @@ with tab_confronto:
     create_comparison_table_with_notes(dati_servizi, 'Importo Totale', "Incassi", "notes_incassi", is_currency=True)
     create_comparison_table_with_notes(dati_servizi, 'Numero Titoli', "Numero Titoli", "notes_titoli", is_currency=False)
     
-    # --- Sezione Tabella Redditività ---
     st.markdown("---")
     st.subheader("Confronto Redditività Media per Servizio (€/Titolo)")
     adjust_redditivita = st.checkbox(f"✅ Applica rettifica anno bisestile ({format_europeo(IMPORTO_RETTIFICA)})", key="leap_redditivita")
@@ -278,7 +257,6 @@ with tab_confronto:
         for idx in redditivita_con_totale.index:
             st.session_state.notes[table_key_redd][str(idx)] = st.text_area(f"Nota per **{idx}**:", value=st.session_state.notes[table_key_redd].get(str(idx), ""), key=f"{table_key_redd}_{idx}")
 
-    # --- Sezione Analisi Mensile ---
     st.markdown("---")
     st.header("Analisi Dettagliata per Linea di Prodotto (Base Mensile)")
     adjust_mensile = st.checkbox(f"✅ Applica rettifica anno bisestile ({format_europeo(IMPORTO_RETTIFICA)})", key="leap_mensile")
@@ -331,7 +309,6 @@ with tab_confronto:
     fig_line = px.line(df_plot_line, title=f"Confronto Mensile {metric_selezionata} per: {servizio_selezionato}", markers=True, labels={"value": y_label, "index": "Mese", "variable": "Anno"})
     fig_line.update_layout(yaxis_title=y_label, xaxis_title="Mese")
     st.plotly_chart(fig_line, use_container_width=True)
-
 
 with tab_anno1:
     display_analysis_for_year(full_data, ANNO_1)
