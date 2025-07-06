@@ -1,5 +1,6 @@
+# requirements.txt
 streamlit
 pandas
 plotly-express
 openpyxl
-streamlit-gsheets-connection
+st-gsheets-connection
